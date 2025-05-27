@@ -1,34 +1,24 @@
+
 #include "driverlib.h"
 #include "device.h"
 #include "board.h"
 
-// Defines
 #define EPWM1_TIMER_TBPRD   62500U
-#define EPWM1_MAX_CMPA      57525U
-#define EPWM1_MIN_CMPA      56025U
+#define EPWM1_MAX_CMPA      57300U //57525 = 18,41ms 92,04%
+#define EPWM1_MIN_CMPA      56250U //56025 = 17,92ms 89,64%
 
-#define EPWM_CMP_UP         57525U//minima aceleração
-#define EPWM_CMP_DOWN       56025U //Máxima acelaração
-#define STEP                750 //define o passo do servo motor usado na aceleração (1500: de 0 a 1000)
+//#define EPWM_CMP_UP          62075U
+//#define EPWM_CMP_DOWN        52650U
+#define EPWM_CMP_UP            57300U //min 57525U
+#define EPWM_CMP_DOWN          56250U //max 56025U
+#define STEP                   1050 //1500 de 0 a 1000
 
-#define VREF                3.3f  // Tensão de referência do ADC
-#define ADC_MAX_COUNT       4095  // Valor máximo do ADC (12 bits)
-#define REF                 2.63f //tensão equivalente a 48V
+uint16_t compAValue;
 
-#define ADC_FILTER_SIZE 10
-static float adcBuffer[ADC_FILTER_SIZE] = {0};
-static uint8_t adcIndex = 0;
-
-uint16_t compAValue;//Valor do duty cycle
-uint16_t Vbus; // Tensão no barramento do sistema
-uint16_t adcAResult0; //Leitura do adc
-float voltage; // Tensão em Volts
-float erro=0; //Erro do sistema
-float erro1=0; //Erro do sistema
-
-uint8_t i;
-
+uint16_t Vbus; //tensÃ£o no barramento do sistema
+//
 // Globals
+//
 typedef struct
 {
     uint32_t epwmModule;
@@ -37,118 +27,234 @@ typedef struct
     uint16_t epwmTimerIntCount;
     uint16_t epwmMaxCompA;
     uint16_t epwmMinCompA;
-} epwmInformation;
+}epwmInformation;
 
+//
+// Globals to hold the ePWM information used in this example
+//
 epwmInformation epwm1Info;
 
+//
 // Function Prototypes
-void initEPWM2();
-__interrupt void adcA1ISR(void);
+//
 void initEPWM1(void);
 __interrupt void epwm1ISR(void);
+
 void updateCompare(epwmInformation *epwmInfo);
 
+//
 // Main
+//
 void main(void)
 {
+    //
+    // Initialize device clock and peripherals
+    //
     Device_init();
+
+    //
+    // Disable pin locks and enable internal pull ups.
+    //
     Device_initGPIO();
+
+    //
+    // Initialize PIE and clear PIE registers. Disables CPU interrupts.
+    //
     Interrupt_initModule();
+
+    //
+    // Initialize the PIE vector table with pointers to the shell Interrupt
+    // Service Routines (ISR).
+    //
     Interrupt_initVectorTable();
+
+    //
+    // Assign the interrupt service routines to ePWM interrupts
+    //
     Interrupt_register(INT_EPWM1, &epwm1ISR);
+
+
+    //
+    // Disable sync(Freeze clock to PWM as well)
+    //
     SysCtl_disablePeripheral(SYSCTL_PERIPH_CLK_TBCLKSYNC);
+
+    //
+    // Configure GPIO0/1 , GPIO2/3 and GPIO4/5 as ePWM1A/1B, ePWM2A/2B and
+    // ePWM3A/3B pins respectively
+    // Configure EPWM Modules
+    //
     Board_init();
+
     initEPWM1();
-    initEPWM2();
-    Interrupt_enable(INT_ADCA1);
+
+    //
+    // Enable sync and clock to PWM
+    //
     SysCtl_enablePeripheral(SYSCTL_PERIPH_CLK_TBCLKSYNC);
+
+    //
+    // Enable ePWM interrupts
+    //
     Interrupt_enable(INT_EPWM1);
+
+    //
+    // Enable Global Interrupt (INTM) and realtime interrupt (DBGM)
+    //
     EINT;
     ERTM;
-    EPWM_enableADCTrigger(EPWM2_BASE, EPWM_SOC_A);
-    EPWM_setTimeBaseCounterMode(EPWM2_BASE, EPWM_COUNTER_MODE_UP);
 
-    while(1);
+    //
+    // IDLE loop. Just sit and loop forever (optional):
+    //
+    //
+    while(1)
+       {
+           //
+           // Convert, wait for completion, and store results
+           //
+           ADC_forceMultipleSOC(Vbus_BASE, (ADC_FORCE_SOC0 | ADC_FORCE_SOC1));
+
+           //
+           // Wait for ADCA to complete, then acknowledge flag
+           //
+           while(ADC_getInterruptStatus(Vbus_BASE, ADC_INT_NUMBER1) == false)
+           {
+           }
+           ADC_clearInterruptStatus(Vbus_BASE, ADC_INT_NUMBER1);
+
+           //
+           // Store results
+           //
+           Vbus = ADC_readResult(ADCARESULT_BASE, ADC_SOC_NUMBER0);
+
+           //
+           // Software breakpoint. At this point, conversion results are stored in
+           // myADC0Result0, myADC0Result1, myADC1Result0, and myADC1Result1.
+           //
+           // Hit run again to get updated conversions.
+           //
+           //ESTOP0;
+       }
 }
 
-// Função para configurar o ePWM2 para gerar o SOC.
-void initEPWM2(void)
-{
-    EPWM_disableADCTrigger(EPWM2_BASE, EPWM_SOC_A);
-    EPWM_setADCTriggerSource(EPWM2_BASE, EPWM_SOC_A, EPWM_SOC_TBCTR_U_CMPA);
-    EPWM_setADCTriggerEventPrescale(EPWM2_BASE, EPWM_SOC_A, 1);
-    EPWM_setCounterCompareValue(EPWM2_BASE, EPWM_COUNTER_COMPARE_A, 10713);
-    EPWM_setTimeBasePeriod(EPWM2_BASE, 10714);
-    EPWM_setClockPrescaler(EPWM2_BASE, EPWM_CLOCK_DIVIDER_8, EPWM_HSCLOCK_DIVIDER_14);
-    EPWM_setTimeBaseCounterMode(EPWM2_BASE, EPWM_COUNTER_MODE_UP);
-
-}
-
-// ePWM1 ISR
+//
+// epwm1ISR - ePWM 1 ISR
+//
 __interrupt void epwm1ISR(void)
 {
+    //
+    // Update the CMPA and CMPB values
+    //
     updateCompare(&epwm1Info);
+
+    //
+    // Clear INT flag for this timer
+    //
     EPWM_clearEventTriggerInterruptFlag(myEPWM1_BASE);
+
+    //
+    // Acknowledge interrupt group
+    //
     Interrupt_clearACKGroup(INTERRUPT_ACK_GROUP3);
 }
 
-// ADC A Interrupt 1 ISR utilizando o ePWM2
-__interrupt void adcA1ISR(void)
-{
-    adcAResult0 = ADC_readResult(ADCARESULT_BASE, ADC_SOC_NUMBER0);
-
-    // Atualiza buffer circular
-    adcBuffer[adcIndex] = (adcAResult0 * VREF) / ADC_MAX_COUNT;
-    adcIndex = (adcIndex + 1) % ADC_FILTER_SIZE;
-
-    // Calcula média dos últimos valores lidos
-    voltage = 0;
-    for (i = 0; i < ADC_FILTER_SIZE; i++)
-        voltage += adcBuffer[i];
-
-    voltage /= ADC_FILTER_SIZE;
-
-    erro = REF - voltage;
-    erro1 += erro;
-
-    ADC_clearInterruptStatus(ADCA_BASE, ADC_INT_NUMBER1);
-    if (ADC_getInterruptOverflowStatus(ADCA_BASE, ADC_INT_NUMBER1))
-    {
-        ADC_clearInterruptOverflowStatus(ADCA_BASE, ADC_INT_NUMBER1);
-        ADC_clearInterruptStatus(ADCA_BASE, ADC_INT_NUMBER1);
-    }
-    Interrupt_clearACKGroup(INTERRUPT_ACK_GROUP1);
-}
-// Configure ePWM1
+//
+// initEPWM1 - Configure ePWM1
+//
 void initEPWM1()
 {
+    //
+    // Information this example uses to keep track of the direction the
+    // CMPA/CMPB values are moving, the min and max allowed values and
+    // a pointer to the correct ePWM registers
+    //
     epwm1Info.epwmCompADirection = EPWM_CMP_UP;
     epwm1Info.epwmCompBDirection = EPWM_CMP_DOWN;
     epwm1Info.epwmTimerIntCount = 0U;
     epwm1Info.epwmModule = myEPWM1_BASE;
     epwm1Info.epwmMaxCompA = EPWM1_MAX_CMPA;
     epwm1Info.epwmMinCompA = EPWM1_MIN_CMPA;
-
 }
 
-// Update Compare Values
+//
+// updateCompare - Function to update the frequency
+//
 void updateCompare(epwmInformation *epwmInfo)
 {
 
-    compAValue = EPWM_getCounterCompareValue(epwmInfo->epwmModule, EPWM_COUNTER_COMPARE_A);
-    compAValue = (13500*erro1) - (18870*erro) + compAValue;
 
-    // Limita o valor dentro do intervalo permitido
-        if (compAValue > epwmInfo->epwmMaxCompA)
+    compAValue = EPWM_getCounterCompareValue(epwmInfo->epwmModule,
+                                             EPWM_COUNTER_COMPARE_A);
+
+
+    //
+    //  Change the CMPA/CMPB values every 10th interrupt.
+    //
+
+
+    if(epwmInfo->epwmTimerIntCount == 500U)
+    {
+
+        GPIO_togglePin(GPIO0);
+
+        epwmInfo->epwmTimerIntCount = 0U;
+
+        //
+        // If we were increasing CMPA, check to see if we reached the max
+        // value. If not, increase CMPA else, change directions and decrease
+        // CMPA
+        //
+        if(epwmInfo->epwmCompADirection == EPWM_CMP_UP)
         {
-            compAValue = epwmInfo->epwmMaxCompA;
+            if(compAValue < (epwmInfo->epwmMaxCompA))
+            {
+                compAValue = STEP + compAValue;
+                EPWM_setCounterCompareValue(epwmInfo->epwmModule,
+                                            EPWM_COUNTER_COMPARE_A,
+                                            compAValue);
+            }
+            else
+            {
+                compAValue = compAValue - STEP;
+                epwmInfo->epwmCompADirection = EPWM_CMP_DOWN;
+                EPWM_setCounterCompareValue(epwmInfo->epwmModule,
+                                            EPWM_COUNTER_COMPARE_A,
+                                            compAValue);
+            }
         }
-        else if (compAValue < epwmInfo->epwmMinCompA)
+        //
+        // If we were decreasing CMPA, check to see if we reached the min
+        // value. If not, decrease CMPA else, change directions and increase
+        // CMPA
+        //
+        else
         {
-            compAValue = epwmInfo->epwmMinCompA;
+            if( compAValue == (epwmInfo->epwmMinCompA))
+            {
+                compAValue = STEP + compAValue;
+                epwmInfo->epwmCompADirection = EPWM_CMP_UP;
+                EPWM_setCounterCompareValue(epwmInfo->epwmModule,
+                                            EPWM_COUNTER_COMPARE_A,
+                                            compAValue);
+            }
+            else
+            {
+                compAValue = compAValue - STEP;
+                EPWM_setCounterCompareValue(epwmInfo->epwmModule,
+                                            EPWM_COUNTER_COMPARE_A,
+                                            compAValue);
+            }
         }
 
-        // Aplica o novo valor ao registrador do PWM
-        EPWM_setCounterCompareValue(epwmInfo->epwmModule, EPWM_COUNTER_COMPARE_A, compAValue);
 
+
+        DEVICE_DELAY_US(1000);
+
+
+    }
+    else
+    {
+        epwmInfo->epwmTimerIntCount++;
+    }
 }
